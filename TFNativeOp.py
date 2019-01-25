@@ -894,7 +894,8 @@ class TwoDNativeLstmCell(RecSeqCellOp):
   def map_layer_inputs_to_op(cls, X, V_h, V_v, W, i, previous_state=None, previous_output=None, iteration=None):
     """
     Just like NativeOp.LstmGenericBase.map_layer_inputs_to_op().
-    :param tf.Tensor X: inputs: shape (timeT,timeS,batch,n_hidden*5)
+    :param tf.Tensor X: inputs: shape (timeT,timeS,batch,input_features)
+    :param tf.Tensor W: W_re: shape (input_features,n_hidden*5)
     :param tf.Tensor V_h: W_re: shape (n_hidden,n_hidden*5)
     :param tf.Tensor V_v: W_re: shape (n_hidden,n_hidden*5)
     :param tf.Tensor i: index: shape (time,batch)
@@ -914,6 +915,8 @@ class TwoDNativeLstmCell(RecSeqCellOp):
       i = i.cast_float32
     n_batch = tf.shape(X)[2]
     n_out = tf.shape(V_h)[0]
+    trg_length = tf.shape(X)[0]
+    src_length = tf.shape(X)[1]
 
     # ptr_storage_fwd
     height = tf.shape(X)[0]
@@ -929,15 +932,14 @@ class TwoDNativeLstmCell(RecSeqCellOp):
                            dtype=tf.float32)  # 1 * 10 * max_diag_size * sizeof(float*) / sizeof(float)
 
     # valid
-    n_minibatch = tf.shape(X)[2]
-    valid = tf.zeros((1 * max_diag_size * n_minibatch,), dtype=tf.float32)
+    valid = tf.zeros((1 * max_diag_size * n_batch,), dtype=tf.float32)
 
     # workmem
-    workmem = tf.zeros((2, 2, tf.shape(X)[1] + tf.shape(X)[0], tf.shape(X)[2], tf.shape(X)[3]), dtype=tf.float32)
+    workmem = tf.zeros((2, 2, src_length + trg_length, n_batch, n_out), dtype=tf.float32)
     # workmem2
-    workmem2 = tf.zeros((tf.shape(X)[0], tf.shape(X)[2], 5*tf.shape(X)[3]), dtype=tf.float32)
+    workmem2 = tf.zeros((trg_length, n_batch, 5*n_out), dtype=tf.float32)
 
-    i_trg = tf.ones([tf.shape(X)[0], tf.shape(X)[2]])
+    i_trg = tf.ones([trg_length, n_batch])
     sizes = tf.stack([tf.reduce_sum(i_trg, axis=0), tf.reduce_sum(i, axis=0)], axis=1) # target, source
     #sizes = tf.Print(sizes, [tf.shape(sizes), sizes], "sizes", summarize=5000)
 
@@ -948,7 +950,7 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     # bias
     b = tf.zeros((5*n_out,), dtype=tf.float32)
 
-    DYDummy = tf.zeros((tf.shape(X)[0], tf.shape(X)[1], tf.shape(X)[2], tf.shape(V_h)[0]), dtype=tf.float32)
+    DYDummy = tf.zeros((trg_length, src_length, n_batch, n_out), dtype=tf.float32)
 
     return X, V_h, V_v, W, b, ptr_storage_fwd, ptr_storage_bwd, valid, workmem, workmem2, sizes, DYDummy, previous_state, previous_output, iteration
 
