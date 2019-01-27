@@ -12,6 +12,10 @@ python:
 dist: trusty
 sudo: false  # should use the faster container based image
 
+cache:
+    directories:
+        - $HOME/.cache/pip
+
 # command to install dependencies
 # quiet (-qq) to keep log smaller
 # |cat to avoid interactive banner (which blows up the log)
