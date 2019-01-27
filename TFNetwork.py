@@ -1000,6 +1000,7 @@ class TFNetwork(object):
         print("Error, some entry is missing in the checkpoint %r: %s: %s" % (filename, type(exc), exc), file=log.v1)
         print("CustomCheckpointLoader was not able to recover.", file=log.v2)
         raise
+          
 
   def print_network_info(self, name="Network"):
     print("%s layer topology:" % name, file=log.v2)
