@@ -5300,15 +5300,41 @@ class TwoDLSTMLayer(LayerBase):
 
       # this must not be part of var_creation_scope - otherwise the used operations appear to TF to be used outside
       # of the while loop, leading to errors
-      y = self._get_output_native_rec_op(self.cell)
+      x, y = self._get_output_native_rec_op(self.cell)
 
       self.output.placeholder = y
+      self.output_dict = {
+        "output_x": x,
+        "output_y": y
+      }
+      self.n_out = kwargs["n_out"]
 
       # Very generic way to collect all created params.
       # Note that for the TF RNN cells, there is no other way to do this.
       # Also, see the usage of :func:`LayerBase.cls_layer_scope`, e.g. for initial vars.
       params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=re.escape(scope_name_prefix))
       self._add_params(params=params, scope_name_prefix=scope_name_prefix)
+
+  def get_sub_layer(self, layer_name):
+    assert layer_name in ["output_x", "output_y"]
+    full_layer_name = self.name + "/" + layer_name
+
+    output = self.get_out_data_from_opts(self.sources, self.n_out, self.name)
+    if layer_name == "output_x":
+      output.shape = self.sources[0].output.shape[:-1] + (self.n_out,)
+
+    from TFNetworkLayer import InternalLayer
+    sub_layer = InternalLayer(name=full_layer_name, output=output, network=self.network, sources=[self])
+    sub_layer.output.placeholder = self.output_dict[layer_name]
+
+    return sub_layer
+
+  @classmethod
+  def get_sub_layer_out_data_from_opts(cls, layer_name, parent_layer_kwargs):
+    sub_layer_out_data = cls.get_out_data_from_opts(output_name=layer_name, **parent_layer_kwargs)
+    from TFNetworkLayer import InternalLayer
+    return sub_layer_out_data, parent_layer_kwargs["network"], InternalLayer
+
 
   @classmethod
   def get_out_data_from_opts(cls, sources, n_out, name, **kwargs):
@@ -5471,7 +5497,7 @@ class TwoDLSTMLayer(LayerBase):
     previous_state = tf.transpose(previous_state, perm=[1,2,0,3])    # (1, src_length, batch, n_hidden)
     previous_output = tf.transpose(previous_output, perm=[1,2,0,3])  # (1, src_length, batch, n_hidden)
 
-    y, complete_output, final_state = cell(
+    x_out, y, complete_output, final_state = cell(
       source=x, src_mask=index_src,
       recurrent_weights_initializer=self._rec_weights_initializer,
       target=targets,
@@ -5497,4 +5523,4 @@ class TwoDLSTMLayer(LayerBase):
     if self.network.have_rec_step_info():
       y = y[0]
 
-    return y
+    return x_out, y

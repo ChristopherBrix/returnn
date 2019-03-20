@@ -918,7 +918,9 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
       return selfComputedLastOut
 
-    def max_pooling(outComplete):
+    def max_pooling_x(outComplete):
+      return tf.reduce_max(outComplete, axis=0)
+    def max_pooling_y(outComplete):
       return tf.reduce_max(outComplete, axis=1)
 
     def average_pooling(src_mask, out_complete):
@@ -953,16 +955,18 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
       return weighted_sum
 
+    assert self.pooling == 'max', "Currently only max pooling is supported"
     if self.pooling == 'max':
-      output = max_pooling(outComplete)
+      y_output = max_pooling_y(outComplete)
+      x_output = max_pooling_y(outComplete)
     elif self.pooling == 'average':
-      output = average_pooling(src_mask, outComplete)
+      y_output = average_pooling(src_mask, outComplete)
     elif self.pooling == 'weighted':
-      output = weighted_pooling(src_mask, outComplete, target)
+      y_output = weighted_pooling(src_mask, outComplete, target)
     else:
-      output = last_pooling(src_mask, outComplete)
+      y_output = last_pooling(src_mask, outComplete)
 
-    return output, outComplete, final_state
+    return x_output, y_output, outComplete, final_state
 
 
 def make_fast_baum_welch_op(**kwargs):
