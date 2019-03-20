@@ -3361,6 +3361,8 @@ class ChoiceLayer(LayerBase):
       ids_1 = tf.floormod(combined_ids, beam_sizes[1])
 
       # Now get the final target labels by indexing the labels.
+      from TFUtil import assert_min_tf_version
+      assert_min_tf_version((1, 11), "batch_gather")
       labels_0 = tf.squeeze(tf.batch_gather(pruned_labels[0], tf.expand_dims(ids_0, axis=-1)), axis=-1)
       labels_1 = tf.squeeze(tf.batch_gather(pruned_labels[1], tf.expand_dims(ids_1, axis=-1)), axis=-1)
 
@@ -5319,9 +5321,8 @@ class TwoDLSTMLayer(LayerBase):
     assert layer_name in ["output_x", "output_y"]
     full_layer_name = self.name + "/" + layer_name
 
-    output = self.get_out_data_from_opts(self.sources, self.n_out, self.name)
-    if layer_name == "output_x":
-      output.shape = self.sources[0].output.shape[:-1] + (self.n_out,)
+    offset = 0 if layer_name == "output_y" else 1
+    output = self.get_out_data_from_opts(self.sources, self.n_out, self.name, offset=offset)
 
     from TFNetworkLayer import InternalLayer
     sub_layer = InternalLayer(name=full_layer_name, output=output, network=self.network, sources=[self])
@@ -5337,13 +5338,15 @@ class TwoDLSTMLayer(LayerBase):
 
 
   @classmethod
-  def get_out_data_from_opts(cls, sources, n_out, name, **kwargs):
+  def get_out_data_from_opts(cls, sources, n_out, name, offset=0, **kwargs):
     assert len(sources) == 2, "Exactly 2 sources (x and y axis) have to be specified."
-    batch_dim_axis = sources[1].output.batch_dim_axis
-    time_dim_axis = sources[1].output.time_dim_axis
-    shape = sources[1].output.shape[:-1] + (n_out,)
-    size_placeholder = sources[1].output.size_placeholder.copy()
-    beam_size = sources[0].output.beam_size
+
+    batch_dim_axis = 0 if sources[1].output.time_dim_axis is None else 1
+    time_dim_axis = None if sources[1].output.time_dim_axis is None else 0
+
+    shape = sources[1-offset].output.shape[:-1] + (n_out,)
+    size_placeholder = sources[1-offset].output.size_placeholder.copy()
+    beam_size = sources[0+offset].output.beam_size
     dtype = "float32"
     available_for_inference = all([(src.output.available_for_inference) for src in sources])
 

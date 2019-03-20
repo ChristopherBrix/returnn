@@ -958,7 +958,7 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     assert self.pooling == 'max', "Currently only max pooling is supported"
     if self.pooling == 'max':
       y_output = max_pooling_y(outComplete)
-      x_output = max_pooling_y(outComplete)
+      x_output = max_pooling_x(outComplete)
     elif self.pooling == 'average':
       y_output = average_pooling(src_mask, outComplete)
     elif self.pooling == 'weighted':
