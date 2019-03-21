@@ -59,6 +59,10 @@ class CachedDataset2(Dataset):
     del self.added_data[:i]
 
   def _get_seq(self, seq_idx):
+    for data in self.added_data[seq_idx-1:seq_idx+1]:
+      if data.seq_idx == seq_idx:
+        return data
+
     for data in self.added_data:
       if data.seq_idx == seq_idx:
         return data
