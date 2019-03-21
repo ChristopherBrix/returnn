@@ -469,6 +469,7 @@ class Dataset(object):
     :param int sorted_seq_idx:
     :rtype: str
     """
+    print("Called get tag seq")
     return "seq-%i" % sorted_seq_idx
 
   def get_all_tags(self):
@@ -480,8 +481,11 @@ class Dataset(object):
     old_partition_epoch = self.partition_epoch
     try:
       all_tags = [None] * self.num_seqs
+      print("Perfomring %d iterations" % (self.num_seqs,))
       for seq_idx in range(self.num_seqs):
         all_tags[seq_idx] = self.get_tag(seq_idx)
+        if seq_idx % 10000 == 0:
+          print(seq_idx, all_tags[seq_idx], self.get_tag(seq_idx))
       return all_tags
     finally:
       self.partition_epoch = old_partition_epoch
