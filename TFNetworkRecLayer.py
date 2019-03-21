@@ -5356,6 +5356,8 @@ class TwoDLSTMLayer(LayerBase):
 
     shape = sources[1-offset].output.shape[:-1] + (n_out,)
     size_placeholder = sources[1-offset].output.size_placeholder.copy()
+    if len(size_placeholder) > 0:
+      size_placeholder[0] = size_placeholder[0] if offset==0 else size_placeholder[0]-1
     beam_size = sources[0+offset].output.beam_size
     dtype = "float32"
     available_for_inference = all([(src.output.available_for_inference) for src in sources])
@@ -5464,10 +5466,6 @@ class TwoDLSTMLayer(LayerBase):
 
     assert self.sources[0].output
     x, seq_len_src = self._get_input()
-    if self.shift_x:
-      x = tf.concat([ tf.zeros((1, tf.shape(x)[1], tf.shape(x)[2])),
-                      x], axis=0)
-      seq_len_src += 1
     if cell.does_input_projection:
       # The cell get's x as-is. It will internally does the matrix mult and add the bias.
       pass
@@ -5542,6 +5540,5 @@ class TwoDLSTMLayer(LayerBase):
 
     if self.shift_x:
       x_out = x_out[:-1]
-      x_out = tf.Print(x_out, [tf.shape(x_out)])
 
     return x_out, y
