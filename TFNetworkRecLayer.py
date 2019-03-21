@@ -5234,6 +5234,7 @@ class TwoDLSTMLayer(LayerBase):
                pooling='last',
                unit_opts=None,
                forward_weights_init=None, recurrent_weights_init=None, bias_init=None,
+               shift_x=False,
                **kwargs):
     """
     :param str pooling: defines how the 1D return value is computed based on the 2D lstm result. Either 'last' or 'max'
@@ -5252,6 +5253,15 @@ class TwoDLSTMLayer(LayerBase):
     else:
       assert False, "currently, there's no CPU support"
     self.pooling = pooling
+    self.shift_x = shift_x
+    if not self.shift_x:
+      print(" =================================================================== ")
+      print(" =======================WARNING ==================================== ")
+      print(" ============================YOU'RE NOT SHIFTING THE X-AXIS========= ")
+      print(" ==================IS THIS REALLY CORRECT?========================== ")
+      print(" =================================================================== ")
+      print(" =================================================================== ")
+      print(" =================================================================== ")
     # On the random initialization:
     # For many cells, e.g. NativeLSTM: there will be a single recurrent weight matrix, (output.dim, output.dim * 4),
     # and a single input weight matrix (input_data.dim, output.dim * 4), and a single bias (output.dim * 4,).
@@ -5454,6 +5464,10 @@ class TwoDLSTMLayer(LayerBase):
 
     assert self.sources[0].output
     x, seq_len_src = self._get_input()
+    if self.shift_x:
+      x = tf.concat([ tf.zeros((1, tf.shape(x)[1], tf.shape(x)[2])),
+                      x], axis=0)
+      seq_len_src += 1
     if cell.does_input_projection:
       # The cell get's x as-is. It will internally does the matrix mult and add the bias.
       pass
@@ -5525,5 +5539,9 @@ class TwoDLSTMLayer(LayerBase):
     # during inference, the 2D result has target length 1. This dimension has to be removed to be conform with RETURNN
     if self.network.have_rec_step_info():
       y = y[0]
+
+    if self.shift_x:
+      x_out = x_out[:-1]
+      x_out = tf.Print(x_out, [tf.shape(x_out)])
 
     return x_out, y
