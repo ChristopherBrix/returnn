@@ -66,7 +66,7 @@ def _get_tmp_file(suffix):
   return fn
 
 
-session = tf.InteractiveSession()
+tf_interactive_session = tf.InteractiveSession()
 
 
 def test_DataProvider():
@@ -98,7 +98,7 @@ def test_DataProvider():
   batches = BatchSetGenerator(dataset, generator=batch_generator)
   from TFDataPipeline import FeedDictDataProvider
   data_provider = FeedDictDataProvider(
-    tf_session=session, extern_data=extern_data,
+    tf_session=tf_interactive_session, extern_data=extern_data,
     data_keys=["data", "classes"],
     dataset=dataset, batches=batches)
 
@@ -2316,8 +2316,8 @@ if __name__ == "__main__":
         else:
           eval(arg)  # assume Python code and execute
   finally:
-    session.close()
-    del session
+    tf_interactive_session.close()
+    del tf_interactive_session
     tf.reset_default_graph()
     import threading
     if len(list(threading.enumerate())) > 1:
