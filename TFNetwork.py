@@ -1947,7 +1947,7 @@ class CustomCheckpointLoader:
   """
 
   def __init__(self, filename, saveable_params, params_prefix="", load_if_prefix="", ignore_missing=False,
-               network=None, layer_mapping={}):
+               network=None, layer_mapping=None):
     """
     :param str filename: filepattern for NewCheckpointReader
     :param list[tf.Variable|tensorflow.python.training.saver.BaseSaverBuilder.SaveableObject] saveable_params:
@@ -1965,6 +1965,7 @@ class CustomCheckpointLoader:
     self.load_if_prefix = load_if_prefix
     self.saveable_params = []
     self.param_mapping = {}
+    layer_mapping = layer_mapping or {}
     for param in saveable_params:
       custom_post_init = getattr(param, "custom_post_init", None)
       if custom_post_init:

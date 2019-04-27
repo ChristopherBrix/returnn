@@ -1760,18 +1760,21 @@ def test_preload_from_files_layer_mapping():
       "num_outputs": n_out,
       "num_inputs": n_in,
       "network": {
-        "l1": {"class": "linear", "activation": None, "n_out": n_hidden, 'bias_init': 1.0, 'forward_weights_init': 'orthogonal'},
-        "l2": {"class": "linear", "activation": None, "n_out": n_hidden, 'bias_init': 1.0, 'forward_weights_init': 'orthogonal', "from": ["l1"]},
-        "output": {"class": "linear", "activation": None, "n_out": n_out, "from": ["l2"], 'bias_init': 2.0, 'forward_weights_init': 'orthogonal'}
+        "l1": {"class": "linear", "activation": None, "n_out": n_hidden, 'bias_init': 1.0,
+               'forward_weights_init': 'orthogonal'},
+        "l2": {"class": "linear", "activation": None, "n_out": n_hidden, 'bias_init': 1.0,
+               'forward_weights_init': 'orthogonal', "from": ["l1"]},
+        "output": {"class": "linear", "activation": None, "n_out": n_out, "from": ["l2"], 'bias_init': 2.0,
+                   'forward_weights_init': 'orthogonal'}
       }
     })
     network = TFNetwork(config=config, train_flag=True)
     network.construct_from_dict(config.typed_dict["network"])
     network.initialize_params(session)
     params_orig_dump = network.get_params_serialized(session)
-    assert(params_orig_dump.values_dict["l1"]["W"].any())
-    assert(params_orig_dump.values_dict["l2"]["W"].any())
-    assert(params_orig_dump.values_dict["output"]["W"].any())
+    assert params_orig_dump.values_dict["l1"]["W"].any()
+    assert params_orig_dump.values_dict["l2"]["W"].any()
+    assert params_orig_dump.values_dict["output"]["W"].any()
     network.save_params_to_file(filename=model_filename, session=session)
 
   config = Config()
