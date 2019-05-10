@@ -101,7 +101,7 @@ class LmDataset(CachedDataset2):
     if orth_symbols_map_file and orth_symbols_map_file.endswith('.pkl'):
       import pickle
       with open(orth_symbols_map_file, 'rb') as f:
-        self.orth_symbols_map = pickle.load(f)
+        self.orth_symbols_map = pickle.load(f, encoding="latin1")
       self.orth_symbols = self.orth_symbols_map.keys()
       self.labels["data"] = list(self.orth_symbols)
       self.seq_gen = None
@@ -1166,7 +1166,7 @@ class TranslationDataset(CachedDataset2):
     if not os.path.exists(filename):
       raise Exception("Vocab file not found: %r" % filename)
     import pickle
-    vocab = pickle.load(open(self._transform_filename(filename), "rb"))
+    vocab = pickle.load(open(self._transform_filename(filename), "rb"), encoding="latin1")
     assert isinstance(vocab, dict)
     return vocab
 
