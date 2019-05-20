@@ -5393,9 +5393,15 @@ class TwoDLSTMLayer(LayerBase):
     assert self.sources[0].output
     assert self.sources[1].output
     x = self.sources[0].output.get_placeholder_as_time_major()  # (time,batch,[dim])
-    seq_len_src = self.sources[0].output.get_sequence_lengths()
+    x_mask = self.sources[0].output.get_sequence_mask()
+    if not self.sources[0].output.is_time_major:
+      x_mask = tf.transpose(x_mask)
 
-    return x, seq_len_src
+    y_mask = self.sources[1].output.get_sequence_mask()
+    if not self.sources[1].output.is_time_major:
+      y_mask = tf.transpose(y_mask)
+
+    return (x, x_mask), y_mask
 
   def get_constraints_value(self):
     v = super(TwoDLSTMLayer, self).get_constraints_value()
@@ -5465,7 +5471,7 @@ class TwoDLSTMLayer(LayerBase):
     from TFUtil import dot, sequence_mask_time_major, directed, to_int32_64, set_param_axes_split_info
 
     assert self.sources[0].output
-    x, seq_len_src = self._get_input()
+    (x, x_mask), y_mask = self._get_input()
     if cell.does_input_projection:
       # The cell get's x as-is. It will internally does the matrix mult and add the bias.
       pass
@@ -5482,7 +5488,6 @@ class TwoDLSTMLayer(LayerBase):
         set_param_axes_split_info(W, [[self.sources[0].output.dim], cell.n_input_dim_parts])
         set_param_axes_split_info(b, [cell.n_input_dim_parts])
       x += b
-    index_src = sequence_mask_time_major(seq_len_src, maxlen=self.sources[0].output.time_dimension())
 
     # If the target does not have a time dimension, we have to add it
     if self.sources[1].output.time_dim_axis is None:
@@ -5499,8 +5504,8 @@ class TwoDLSTMLayer(LayerBase):
       batch_dim = tf.shape(targets)[1]
       sources = self.sources[0].output.get_placeholder_as_time_major()
       src_length = tf.shape(sources)[0]
-      features = tf.shape(sources)[2]
-      initial_values = TwoDLSTMLayer.helper_extra_outputs(batch_dim, src_length, features)
+      n_hidden = cell.n_hidden
+      initial_values = TwoDLSTMLayer.helper_extra_outputs(batch_dim, src_length, n_hidden)
 
       previous_state = initial_values["state"]    # (batch, 1, src_length, n_hidden)
       previous_output = initial_values["output"]  # (batch, 1, src_length, n_hidden)
@@ -5513,7 +5518,7 @@ class TwoDLSTMLayer(LayerBase):
     previous_output = tf.transpose(previous_output, perm=[1,2,0,3])  # (1, src_length, batch, n_hidden)
 
     x_out, y, complete_output, final_state = cell(
-      source=x, src_mask=index_src,
+      source=x, src_mask=x_mask, trg_mask=y_mask,
       recurrent_weights_initializer=self._rec_weights_initializer,
       target=targets,
       previous_state=previous_state,

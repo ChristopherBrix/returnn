@@ -792,7 +792,7 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     self.op = make_op(NativeOp.TwoDLSTM)
 
   @classmethod
-  def map_layer_inputs_to_op(cls, X, V_h, V_v, W, i, previous_state=None, previous_output=None, iteration=None):
+  def map_layer_inputs_to_op(cls, X, V_h, V_v, W, i, i_trg, previous_state=None, previous_output=None, iteration=None):
     """
     Just like NativeOp.LstmGenericBase.map_layer_inputs_to_op().
     :param tf.Tensor X: inputs: shape (timeT,timeS,batch,n_hidden*5)
@@ -813,6 +813,13 @@ class TwoDNativeLstmCell(RecSeqCellOp):
           i_cast_float32 = tf.cast(i, dtype=tf.float32, name="index_cast_float32")
         i.cast_float32 = i_cast_float32
       i = i.cast_float32
+    if i_trg.dtype != tf.float32:
+      if not hasattr(i_trg, "cast_float32"):
+        from TFUtil import reuse_name_scope_of_tensor
+        with reuse_name_scope_of_tensor(i_trg):
+          i_trg_cast_float32 = tf.cast(i_trg, dtype=tf.float32, name="index_cast_float32")
+          i_trg.cast_float32 = i_trg_cast_float32
+          i_trg = i_trg.cast_float32
     n_batch = tf.shape(X)[2]
     n_out = tf.shape(V_h)[0]
 
@@ -838,7 +845,6 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     # workmem2
     workmem2 = tf.zeros((tf.shape(X)[0], tf.shape(X)[2], 5*tf.shape(X)[3]), dtype=tf.float32)
 
-    i_trg = tf.ones([tf.shape(X)[0], tf.shape(X)[2]])
     sizes = tf.stack([tf.reduce_sum(i_trg, axis=0), tf.reduce_sum(i, axis=0)], axis=1) # target, source
     #sizes = tf.Print(sizes, [tf.shape(sizes), sizes], "sizes", summarize=5000)
 
@@ -853,7 +859,7 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
     return X, V_h, V_v, W, b, ptr_storage_fwd, ptr_storage_bwd, valid, workmem, workmem2, sizes, DYDummy, previous_state, previous_output, iteration
 
-  def __call__(self, source, src_mask, recurrent_weights_initializer=None, target=None, previous_state=None, previous_output=None, iteration=None):
+  def __call__(self, source, src_mask, trg_mask, recurrent_weights_initializer=None, target=None, previous_state=None, previous_output=None, iteration=None):
     """
     :param tf.Tensor source: shape (src_length, batch, src_features)
     :param tf.Tensor src_mask: shape (time, batch)
@@ -880,7 +886,7 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     ], axis=3) # (trg_len, src_len, batch, features)
 
     outComplete, final_state = self.op(
-      *self.map_layer_inputs_to_op(X=twod_input, V_h=Vh_re, V_v=Vv_re, W=W_re, i=src_mask, previous_state=previous_state, previous_output=previous_output, iteration=iteration))
+      *self.map_layer_inputs_to_op(X=twod_input, V_h=Vh_re, V_v=Vv_re, W=W_re, i=src_mask, i_trg=trg_mask, previous_state=previous_state, previous_output=previous_output, iteration=iteration))
 
     # outComplete (trg_len, src_len, batch, n_hidden)
     # final_state (trg_len, src_len, batch, n_hidden*5)
@@ -957,6 +963,24 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
     assert self.pooling == 'max', "Currently only max pooling is supported"
     if self.pooling == 'max':
+      # masked out places would have 0 as their value. This causes the max operation be become a RELU
+      # because this only happens for sequences with applied padding, the training would be dependant on the chosen
+      # batches. To avoid that, we set all padded values to very low values that will not be selected by the max op
+      
+      flipped = tf.logical_not(src_mask)
+      minimal = tf.expand_dims(flipped, axis=0) # (1, src_len, batch)
+      minimal = tf.expand_dims(minimal, axis=3) # (1, src_len, batch, n_hidden)
+      minimal = tf.cast(minimal, dtype=tf.float32)
+      minimal = -99 * minimal
+      outComplete += minimal
+
+      flipped = tf.logical_not(trg_mask)
+      minimal = tf.expand_dims(flipped, axis=1) # (trg_len, 1, batch)
+      minimal = tf.expand_dims(minimal, axis=3) # (trg_len, 1, batch, n_hidden)
+      minimal = tf.cast(minimal, dtype=tf.float32)
+      minimal = -99 * minimal
+      outComplete += minimal
+
       y_output = max_pooling_y(outComplete)
       x_output = max_pooling_x(outComplete)
     elif self.pooling == 'average':
@@ -965,6 +989,9 @@ class TwoDNativeLstmCell(RecSeqCellOp):
       y_output = weighted_pooling(src_mask, outComplete, target)
     else:
       y_output = last_pooling(src_mask, outComplete)
+
+    x_output *= tf.cast(tf.expand_dims(src_mask, axis=2), dtype=tf.float32)
+    y_output *= tf.cast(tf.expand_dims(trg_mask, axis=2), dtype=tf.float32)
 
     return x_output, y_output, outComplete, final_state
 
