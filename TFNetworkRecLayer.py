@@ -5354,10 +5354,8 @@ class TwoDLSTMLayer(LayerBase):
     batch_dim_axis = 0 if sources[1].output.time_dim_axis is None else 1
     time_dim_axis = None if sources[1].output.time_dim_axis is None else 0
 
-    shape = sources[1-offset].output.shape[:-1] + (n_out,)
-    size_placeholder = sources[1-offset].output.size_placeholder.copy()
-    if len(size_placeholder) > 0:
-      size_placeholder[0] = size_placeholder[0] if offset==0 else size_placeholder[0]-1
+    shape = (n_out,)
+    size_placeholder = {}
     beam_size = sources[0+offset].output.beam_size
     dtype = "float32"
     available_for_inference = all([(src.output.available_for_inference) for src in sources])
@@ -5365,8 +5363,8 @@ class TwoDLSTMLayer(LayerBase):
     return Data(
       name="%s_output" % name,
       shape=shape,
-      batch_dim_axis=batch_dim_axis,
-      time_dim_axis=time_dim_axis,
+      batch_dim_axis=0,
+      time_dim_axis=None,
       size_placeholder=size_placeholder,
       available_for_inference=available_for_inference,
       dtype=dtype,

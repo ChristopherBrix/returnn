@@ -820,6 +820,10 @@ class TwoDNativeLstmCell(RecSeqCellOp):
           i_trg_cast_float32 = tf.cast(i_trg, dtype=tf.float32, name="index_cast_float32")
           i_trg.cast_float32 = i_trg_cast_float32
           i_trg = i_trg.cast_float32
+      i_trg = i_trg.cast_float32
+
+    if i_trg.dtype != tf.float32:
+      assert False
     n_batch = tf.shape(X)[2]
     n_out = tf.shape(V_h)[0]
 
@@ -961,12 +965,12 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
       return weighted_sum
 
-    assert self.pooling == 'max', "Currently only max pooling is supported"
+    assert self.pooling == 'last', "Currently only last pooling is supported"
     if self.pooling == 'max':
       # masked out places would have 0 as their value. This causes the max operation be become a RELU
       # because this only happens for sequences with applied padding, the training would be dependant on the chosen
       # batches. To avoid that, we set all padded values to very low values that will not be selected by the max op
-      
+
       flipped = tf.logical_not(src_mask)
       minimal = tf.expand_dims(flipped, axis=0) # (1, src_len, batch)
       minimal = tf.expand_dims(minimal, axis=3) # (1, src_len, batch, n_hidden)
@@ -983,6 +987,9 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
       y_output = max_pooling_y(outComplete)
       x_output = max_pooling_x(outComplete)
+
+      x_output *= tf.cast(tf.expand_dims(src_mask, axis=2), dtype=tf.float32)
+      y_output *= tf.cast(tf.expand_dims(trg_mask, axis=2), dtype=tf.float32)
     elif self.pooling == 'average':
       y_output = average_pooling(src_mask, outComplete)
     elif self.pooling == 'weighted':
@@ -990,8 +997,32 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     else:
       y_output = last_pooling(src_mask, outComplete)
 
-    x_output *= tf.cast(tf.expand_dims(src_mask, axis=2), dtype=tf.float32)
-    y_output *= tf.cast(tf.expand_dims(trg_mask, axis=2), dtype=tf.float32)
+      # 1) append one 0 to the src mask. This ensures, that every mask ends in a 0, even if the sentence has maximal length
+      additional = tf.zeros([1, tf.shape(trg_mask)[1]], dtype=tf.bool)
+      extended_trg_mask = tf.concat([trg_mask, additional], axis=0)
+
+      # 2) move the index by one position
+      rolled = tf.manip.roll(extended_trg_mask, shift=[1], axis=[0])
+
+      # 3) compare
+      rolled = tf.cast(rolled, tf.uint8)
+      extended_trg_mask = tf.cast(extended_trg_mask, tf.uint8)
+      bitwise = tf.bitwise.bitwise_xor(rolled, extended_trg_mask)
+
+      # 4) we shifted the mask, this has to be undone. We have to remove the added 0 at the end as well
+      last_index = tf.manip.roll(bitwise, shift=[-1], axis=[0])
+      last_index = tf.cast(last_index, dtype=tf.float32)
+      last_index = last_index[:-1, :]
+
+      # So far, the mask had the shape (trg_len, batch). To use it on the 1D output, we need (trg_len, batch, features)
+      last_index = tf.expand_dims(last_index, axis=2)
+
+      # Mask out everything but the values for the last word, then sum to remove the dimension
+      selfComputedLastOut = y_output * last_index
+      y_output = tf.reduce_sum(selfComputedLastOut, axis=0)  # (batch, n_hidden)
+
+      x_output = None
+
 
     return x_output, y_output, outComplete, final_state
 
