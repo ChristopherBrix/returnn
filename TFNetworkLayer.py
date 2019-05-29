@@ -5520,6 +5520,7 @@ class HDFDumpLayer(LayerBase):
     :param bool dump_whole_batches: dumps the whole batch as a single sequence into the HDF
     """
     super(HDFDumpLayer, self).__init__(**kwargs)
+    assert len(self.sources) == 1
     self.output = self.sources[0].output.copy("%s_output" % self.name)
     data = self.output.copy_as_batch_major()  # need batch-major for SimpleHDFWriter
 
@@ -5534,6 +5535,7 @@ class HDFDumpLayer(LayerBase):
     if dump_whole_batches:
       ndim = data.ndim - len(data.size_placeholder) + 1
     data_dim = None if data.sparse else data.dim
+    ndim_without_features = ndim - (1 if data_dim else 0)
     self.hdf_writer = SimpleHDFWriter(filename=filename, dim=data_dim, ndim=ndim)
     atexit.register(self._at_exit)
 
@@ -5547,8 +5549,15 @@ class HDFDumpLayer(LayerBase):
       # noinspection PyBroadException
       try:
         n_batch = data_np.shape[0]
+        print(data_np.shape, data_np)
         assert len(sizes) == len(data.size_placeholder)
         seq_lens = {i: size for (i, size) in zip(sorted(data.size_placeholder.keys()), sizes)}
+        for dim in range(ndim-1):
+          if dim not in seq_lens:
+            print(dim, " is not is seq_lens")
+            seq_lens[dim] = numpy.array([data_np.shape[dim+1]] * n_batch, dtype="int32")
+        assert len(seq_lens) == ndim_without_features
+        print("Final seq_lens: ", seq_lens)
         extra = {}
         if self.dump_whole_batches:
           # The batch dim itself becomes another axis to dump.
@@ -5563,6 +5572,8 @@ class HDFDumpLayer(LayerBase):
           seq_lens = {0: numpy.array([flat_len], dtype="int32")}
           tags = [b"<->".join(tags)]
           n_batch = 1
+        print("Final after whole seq_lens: ", seq_lens)
+        print(data_np.shape, data_np)
         assert n_batch == data_np.shape[0] == len(tags)
         self.num_seqs_written += n_batch
         self.hdf_writer.insert_batch(inputs=data_np, seq_tag=tags, seq_len=seq_lens, extra=extra)
