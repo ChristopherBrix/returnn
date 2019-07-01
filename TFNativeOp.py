@@ -965,7 +965,7 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
       return weighted_sum
 
-    assert self.pooling == 'last', "Currently only last pooling is supported"
+    assert self.pooling in ['max', 'last'], "Currently only max/last pooling is supported"
     if self.pooling == 'max':
       # masked out places would have 0 as their value. This causes the max operation be become a RELU
       # because this only happens for sequences with applied padding, the training would be dependant on the chosen
