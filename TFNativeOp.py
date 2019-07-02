@@ -818,8 +818,7 @@ class TwoDNativeLstmCell(RecSeqCellOp):
         from TFUtil import reuse_name_scope_of_tensor
         with reuse_name_scope_of_tensor(i_trg):
           i_trg_cast_float32 = tf.cast(i_trg, dtype=tf.float32, name="index_cast_float32")
-          i_trg.cast_float32 = i_trg_cast_float32
-          i_trg = i_trg.cast_float32
+        i_trg.cast_float32 = i_trg_cast_float32
       i_trg = i_trg.cast_float32
 
     if i_trg.dtype != tf.float32:
