@@ -612,6 +612,32 @@ class TFNetwork(object):
             else:
               total_constraints += constraints
 
+    class MetaLossHolder:
+      def __init__(self, losses_dict, eval_string):
+        self.losses_dict = losses_dict
+        self.eval_string = eval_string
+
+        import re
+        term_pattern = re.compile('([a-zA-Z0-9_-]+|[^ a-zA-Z0-9_-])')
+        terms = re.findall(term_pattern, self.eval_string)
+        self.used_losses = {k.replace("/", "_"): v for k,v in self.losses_dict.items() if k.replace("/", "_") in terms}
+
+      def get_only_on_eval(self):
+        return any([used_loss.get_only_on_eval() for used_loss in self.used_losses.values()])
+
+      def get_loss_value_for_fetch(self):
+        d = {key: loss.get_loss_value_for_fetch() * loss.get_norm_factor() for key, loss in self.used_losses.items()}
+        return eval(self.eval_string, d)
+
+      def get_error_value(self):
+        d = {key: loss.get_error_value() * loss.get_norm_factor() for key, loss in self.used_losses.items()}
+        return eval(self.eval_string, d)
+
+      def get_norm_factor(self):
+        return tf.constant(1, dtype=tf.float32)
+
+    if self._config.has('meta_loss'):
+      losses_dict["meta_loss"] = MetaLossHolder(losses_dict, self._config.typed_value('meta_loss', ''))
     return losses_dict, total_loss, total_constraints
 
   def _construct_objective(self):
