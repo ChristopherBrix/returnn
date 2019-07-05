@@ -225,7 +225,7 @@ class LearningRateControl(object):
       keys += [self.errorMeasureKey, self.errorMeasureKey + "_output"]
     else:
       assert self.errorMeasureKey is None
-    keys += ["dev_score", "dev_score_output"]
+    keys += ["dev_score_meta_loss", "dev_score", "dev_score_output"]
     for key in keys:
       if key in epoch_data.error:
         return key
