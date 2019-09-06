@@ -130,8 +130,6 @@ class Runner(object):
       loss = self.engine.network.get_objective()
       if loss is 0:
         loss = self.engine.get_const_tensor(key="zero_loss", value=0.0)
-      else:  # non-constant-zero loss
-        assert self.engine.network.losses_dict
       d["loss"] = reduce_sum(loss, name="loss", average=True)
       for loss_name, loss in self.engine.network.losses_dict.items():
         if loss.get_only_on_eval() and self._should_train:
