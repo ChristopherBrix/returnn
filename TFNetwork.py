@@ -627,11 +627,11 @@ class TFNetwork(object):
 
       def get_loss_value_for_fetch(self):
         d = {key: loss.get_loss_value_for_fetch() * loss.get_norm_factor() for key, loss in self.used_losses.items()}
-        return eval(self.eval_string, d)
+        return eval(self.eval_string, d, {'tf': tf})
 
       def get_error_value(self):
         d = {key: loss.get_error_value() * loss.get_norm_factor() for key, loss in self.used_losses.items()}
-        return eval(self.eval_string, d)
+        return eval(self.eval_string, d, {'tf': tf})
 
       def get_norm_factor(self):
         return tf.constant(1, dtype=tf.float32)
