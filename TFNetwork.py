@@ -600,7 +600,10 @@ class TFNetwork(object):
               if total_loss is 0:
                 total_loss = loss_obj.get_loss_value_for_objective()
               else:
-                total_loss += loss_obj.get_loss_value_for_objective()
+                if self._config.has('use_max_loss'):
+                  total_loss = tf.maximum(total_loss, loss_obj.get_loss_value_for_objective())
+                else:
+                  total_loss += loss_obj.get_loss_value_for_objective()
 
       if with_total:
         with reuse_name_scope("constraints"):
