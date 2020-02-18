@@ -7535,13 +7535,11 @@ class TwoDLSTMLayer(LayerBase):
   layer_class = "twod_lstm"
   recurrent = True
 
-  def __init__(self,
-               pooling='last',
-               unit_opts=None,
-               forward_weights_init=None, recurrent_weights_init=None, bias_init=None,
-               **kwargs):
+  def __init__(self, pooling='last', rec_weight_dropout=0.0, unit_opts=None, forward_weights_init=None,
+               recurrent_weights_init=None, bias_init=None, **kwargs):
     """
     :param str pooling: defines how the 1D return value is computed based on the 2D lstm result. Either 'last' or 'max'
+    :param float rec_weight_dropout: dropout for weight matrices
     :param None|dict[str] unit_opts: passed to RNNCell creation
     :param str forward_weights_init: see :func:`TFUtil.get_initializer`
     :param str recurrent_weights_init: see :func:`TFUtil.get_initializer`
@@ -7555,6 +7553,7 @@ class TwoDLSTMLayer(LayerBase):
     else:
       assert False, "currently, there's no CPU support"
     self.pooling = pooling
+    self.rec_weight_dropout = rec_weight_dropout
     # On the random initialization:
     # For many cells, e.g. NativeLSTM: there will be a single recurrent weight matrix, (output.dim, output.dim * 4),
     # and a single input weight matrix (input_data.dim, output.dim * 4), and a single bias (output.dim * 4,).
@@ -7695,6 +7694,7 @@ class TwoDLSTMLayer(LayerBase):
       n_hidden=n_hidden, n_input_dim=sum(n_input_dim_parts), n_input_dim_parts=n_input_dim_parts,
       input_is_sparse=self.sources[0].output.sparse,
       pooling=self.pooling,
+      rec_weight_dropout=self.rec_weight_dropout,
       **unit_opts)
     return cell
 

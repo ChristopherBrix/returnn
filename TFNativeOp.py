@@ -884,9 +884,10 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
   does_input_projection = True
 
-  def __init__(self, pooling, **kwargs):
+  def __init__(self, pooling, rec_weight_dropout, **kwargs):
     super(TwoDNativeLstmCell, self).__init__(**kwargs)
     self.pooling = pooling
+    self.rec_weight_dropout = rec_weight_dropout
     self.op = make_op(NativeOp.TwoDLSTM)
 
   @classmethod
@@ -969,6 +970,14 @@ class TwoDNativeLstmCell(RecSeqCellOp):
       name="Vv_re", shape=(self.n_hidden, self.n_hidden * 5), initializer=recurrent_weights_initializer)
     W_re = tf.get_variable(
       name="W_re", shape=(self.n_input_dim, self.n_hidden * 5), initializer=recurrent_weights_initializer)
+
+    if self.rec_weight_dropout:
+      Vh_re = TFUtil.dropout(Vh_re, keep_prob=1.0 - self.rec_weight_dropout, cond_on_train=True,
+                             seed = TFUtil.get_random_seed())
+      Vv_re = TFUtil.dropout(Vv_re, keep_prob=1.0 - self.rec_weight_dropout, cond_on_train=True,
+                             seed = TFUtil.get_random_seed())
+
+
     TFUtil.set_param_axes_split_info(W_re, [[self.n_input_dim], [self.n_hidden] * 5])
 
     twod_input = tf.concat([
