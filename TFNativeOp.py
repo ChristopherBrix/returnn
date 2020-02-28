@@ -891,14 +891,20 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     self.op = make_op(NativeOp.TwoDLSTM)
 
   @classmethod
-  def map_layer_inputs_to_op(cls, X, V_h, V_v, W, i, previous_state=None, previous_output=None, iteration=None):
+  def map_layer_inputs_to_op(cls, X, V_h, V_v, W, i, i_trg, previous_state=None, previous_output=None,
+                             initialAxisIsX=None, iteration=None):
     """
     Just like NativeOp.LstmGenericBase.map_layer_inputs_to_op().
     :param tf.Tensor X: inputs: shape (timeT,timeS,batch,input_features)
-    :param tf.Tensor W: W_re: shape (input_features,n_hidden*5)
-    :param tf.Tensor V_h: W_re: shape (n_hidden,n_hidden*5)
-    :param tf.Tensor V_v: W_re: shape (n_hidden,n_hidden*5)
-    :param tf.Tensor i: index: shape (time,batch)
+    :param tf.Tensor V_h: horizontal weights: shape (n_hidden,n_hidden*5)
+    :param tf.Tensor V_v: vertical weights: shape (n_hidden,n_hidden*5)
+    :param tf.Tensor W: recurrent weights: shape (input_features,n_hidden*5)
+    :param tf.Tensor i: source mask: shape (timeS,batch)
+    :param tf.Tensor i_trg: target mask: shape (timeT,batch)
+    :param tf.Tensor previous_state: state from previous time step: shape (?)
+    :param tf.Tensor previous_output: output from previous time step: shape (?)
+    :param bool initialAxisIsX: indicates whether the supplied prev. state/output is from x or y axis
+    :param tf.Tensor iteration: iteration: shape (batch)
     :rtype: (tf.Tensor,tf.Tensor,tf.Tensor,tf.Tensor)
     """
     assert X.get_shape().ndims == 4
@@ -913,6 +919,14 @@ class TwoDNativeLstmCell(RecSeqCellOp):
           i_cast_float32 = tf.cast(i, dtype=tf.float32, name="index_cast_float32")
         i.cast_float32 = i_cast_float32
       i = i.cast_float32
+    if i_trg.dtype != tf.float32:
+      if not hasattr(i_trg, "cast_float32"):
+        from TFUtil import reuse_name_scope_of_tensor
+        with reuse_name_scope_of_tensor(i_trg):
+          i_trg_cast_float32 = tf.cast(i_trg, dtype=tf.float32, name="index_cast_float32")
+          i_trg.cast_float32 = i_trg_cast_float32
+          i_trg = i_trg.cast_float32
+
     n_batch = tf.shape(X)[2]
     n_out = tf.shape(V_h)[0]
     trg_length = tf.shape(X)[0]
@@ -939,7 +953,6 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     # workmem2
     workmem2 = tf.zeros((trg_length, n_batch, 5*n_out), dtype=tf.float32)
 
-    i_trg = tf.ones([trg_length, n_batch])
     sizes = tf.stack([tf.reduce_sum(i_trg, axis=0), tf.reduce_sum(i, axis=0)], axis=1) # target, source
     #sizes = tf.Print(sizes, [tf.shape(sizes), sizes], "sizes", summarize=5000)
 
@@ -952,9 +965,16 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
     DYDummy = tf.zeros((trg_length, src_length, n_batch, n_out), dtype=tf.float32)
 
-    return X, V_h, V_v, W, b, ptr_storage_fwd, ptr_storage_bwd, valid, workmem, workmem2, sizes, DYDummy, previous_state, previous_output, iteration
+    if initialAxisIsX:
+      initialAxisIsX = tf.ones((n_minibatch,), dtype=tf.float32)
+    else:
+      initialAxisIsX = tf.zeros((n_minibatch,), dtype=tf.float32)
 
-  def __call__(self, source, src_mask, recurrent_weights_initializer=None, target=None, previous_state=None, previous_output=None, iteration=None):
+    return X, V_h, V_v, W, b, ptr_storage_fwd, ptr_storage_bwd, valid, workmem, workmem2, sizes, DYDummy, \
+           previous_state, previous_output, initialAxisIsX, iteration
+
+  def __call__(self, source, src_mask, trg_mask, recurrent_weights_initializer=None, target=None, previous_state=None,
+               previous_output=None, initialAxisIsX=None, iteration=None):
     """
     :param tf.Tensor source: shape (src_length, batch, src_features)
     :param tf.Tensor src_mask: shape (time, batch)
@@ -988,89 +1008,130 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     ], axis=3) # (trg_len, src_len, batch, features)
 
     outComplete, final_state = self.op(
-      *self.map_layer_inputs_to_op(X=twod_input, V_h=Vh_re, V_v=Vv_re, W=W_re, i=src_mask, previous_state=previous_state, previous_output=previous_output, iteration=iteration))
+      *self.map_layer_inputs_to_op(X=twod_input, V_h=Vh_re, V_v=Vv_re, W=W_re, i=src_mask, i_trg=trg_mask,
+                                   previous_state=previous_state, previous_output=previous_output,
+                                   initialAxisIsX=initialAxisIsX, iteration=iteration))
 
     # outComplete (trg_len, src_len, batch, n_hidden)
     # final_state (trg_len, src_len, batch, n_hidden*5)
 
-    def last_pooling(src_mask, outComplete):
+    def last_pooling(mask, outComplete, over_x=False):
       # The output of the operation are two 2D grids
       # For the prediction of the next target word, only the last output of each row is relevant
       # To select them, we have to find the position of the last word of each sentence
       # To this end, we shift the mask by one position and compare with the unshifted mask: The only position that's
       # different is the position of the last 1 (the last word).
-      # 1) append one 0 to the src mask. This ensures, that every mask ends in a 0, even if the sentence has maximal length
-      additional = tf.zeros([1, tf.shape(src_mask)[1]], dtype=tf.bool)
-      extended_src_mask = tf.concat([src_mask, additional], axis=0)
+      # 1) append one 0 to the mask. This ensures, that every mask ends in a 0, even if the sentence has maximal length
+      additional = tf.zeros([1, tf.shape(mask)[1]], dtype=tf.bool)
+      extended_mask = tf.concat([mask, additional], axis=0)
 
       # 2) move the index by one position
-      rolled = tf.manip.roll(extended_src_mask, shift=[1], axis=[0])
+      rolled = tf.manip.roll(extended_mask, shift=[1], axis=[0])
 
       # 3) compare
       rolled = tf.cast(rolled, tf.uint8)
-      extended_src_mask = tf.cast(extended_src_mask, tf.uint8)
-      bitwise = tf.bitwise.bitwise_xor(rolled, extended_src_mask)
+      extended_mask = tf.cast(extended_mask, tf.uint8)
+      bitwise = tf.bitwise.bitwise_xor(rolled, extended_mask)
 
       # 4) we shifted the mask, this has to be undone. We have to remove the added 0 at the end as well
       last_index = tf.manip.roll(bitwise, shift=[-1], axis=[0])
       last_index = tf.cast(last_index, dtype=tf.float32)
       last_index = last_index[:-1, :]
 
-      # So far, the mask had the shape (src_len, batch). To use it on the 2D output, we need (trg_len, src_len, batch, features)
-      last_index = tf.expand_dims(last_index, axis=0)
-      last_index = tf.expand_dims(last_index, axis=3)
+      # So far, the mask had the shape (len, batch). To use it on the 2D output, we need
+      # (trg_len, src_len, batch, features)
+      if over_x:
+        last_index = tf.expand_dims(last_index, axis=0)
+        last_index = tf.expand_dims(last_index, axis=3)
+      else:
+        last_index = tf.expand_dims(last_index, axis=1)
+        last_index = tf.expand_dims(last_index, axis=3)
 
       # Mask out everything but the values for the last word, then sum to remove the dimension
       selfComputedLastOut = outComplete * last_index
-      selfComputedLastOut = tf.reduce_sum(selfComputedLastOut, axis=1) # (trg_len, batch, n_hidden)
+      if over_x:
+        selfComputedLastOut = tf.reduce_sum(selfComputedLastOut, axis=1)  # (trg_len, batch, n_hidden)
+      else:
+        selfComputedLastOut = tf.reduce_sum(selfComputedLastOut, axis=0)  # (src_len, batch, n_hidden)
 
       return selfComputedLastOut
 
-    def max_pooling(outComplete):
-      return tf.reduce_max(outComplete, axis=1)
+    def average_pooling(mask, out_complete, over_x=False):
+      mask = tf.cast(mask, dtype=tf.float32)  # (src_len, batch)
+      if over_x:
+        mask = tf.expand_dims(mask, axis=0)
+        mask = tf.expand_dims(mask, axis=3)
+      else:
+        mask = tf.expand_dims(mask, axis=1)
+        mask = tf.expand_dims(mask, axis=3)
+      out_complete = out_complete * mask  # (trg_len, src_len, batch, n_hidden)
+      length = tf.reduce_sum(mask, axis=1)  # (1, batch, 1)
+      axis = 1 if over_x else 0
+      out_sum = tf.reduce_sum(out_complete, axis=axis)  # (length, batch, n_hidden)
+      return out_sum / length  # (length, batch, n_hidden)
 
-    def average_pooling(src_mask, out_complete):
-      src_mask = tf.cast(src_mask, dtype=tf.float32)  # (src_len, batch)
-      src_mask = tf.expand_dims(src_mask, axis=0)  # (1, src_len, batch)
-      src_mask = tf.expand_dims(src_mask, axis=3)  # (1, src_len, batch, 1)
-      out_complete = out_complete * src_mask  # (trg_len, src_len, batch, n_hidden)
-      src_len = tf.reduce_sum(src_mask, axis=1)  # (1, batch, 1)
-      out_sum = tf.reduce_sum(out_complete, axis=1)  # (trg_len, batch, n_hidden)
-      return out_sum / src_len  # (trg_len, batch, n_hidden)
-
-    def weighted_pooling(src_mask, out_complete, target):
-      trg_features = target.shape[2]
+    def weighted_pooling(out_complete, query, mask, over_x=True):
+      query = query * mask
+      query_features = query.shape[2]
       W_att = tf.get_variable(  # (trg_features, n_hidden)
-        name="W_att", shape=(trg_features, self.n_hidden), initializer=recurrent_weights_initializer)
+        name="W_att", shape=(query_features, self.n_hidden), initializer=recurrent_weights_initializer)
 
-      # if we assume the following shapes:
-      # target: (trg_len, batch, trg_features) = (t, b, f)
-      # W_att: (trg_features, n_hidden) = (f, n)
-      # out_complete: (trg_len, src_len, batch, n_hidden) = (t, s, b, n)
-      # and weights should have the shape (trg_len, src_len, batch) = (t, s, b)
-      # then we can write the computation as
-      # weights_{t,s,b} = \sum_{f} \sum_{n} target_{t,b,f} * Watt_{f,n} * outcomplete_{t,s,b,n}
-      # using Einstein summation, the sums can be omitted:
-      # weights_{t,s,b} = target_{t,b,f} * Watt_{f,n} * outcomplete_{t,s,b,n}
-      energies = tf.einsum('tbf,fn,tsbn->tsb', target, W_att, out_complete)  # (trg_len, src_len, batch)
+      if over_x:
+        # if we assume the following shapes:
+        # query: (trg_len, batch, trg_features) = (t, b, f)
+        # W_att: (trg_features, n_hidden) = (f, n)
+        # out_complete: (trg_len, src_len, batch, n_hidden) = (t, s, b, n)
+        # and weights should have the shape (trg_len, src_len, batch) = (t, s, b)
+        # then we can write the computation as
+        # weights_{t,s,b} = \sum_{f} \sum_{n} query_{t,b,f} * Watt_{f,n} * outcomplete_{t,s,b,n}
+        # using Einstein summation, the sums can be omitted:
+        # weights_{t,s,b} = query_{t,b,f} * Watt_{f,n} * outcomplete_{t,s,b,n}
+        energies = tf.einsum('tbf,fn,tsbn->tsb', query, W_att, out_complete)  # (trg_len, src_len, batch)
+      else:
+        # if we assume the following shapes:
+        # query: (src_len, batch, trg_features) = (s, b, f)
+        # W_att: (src_features, n_hidden) = (f, n)
+        # out_complete: (trg_len, src_len, batch, n_hidden) = (t, s, b, n)
+        # and weights should have the shape (trg_len, src_len, batch) = (t, s, b)
+        # then we can write the computation as
+        # weights_{t,s,b} = \sum_{f} \sum_{n} query_{s,b,f} * Watt_{f,n} * outcomplete_{t,s,b,n}
+        # using Einstein summation, the sums can be omitted:
+        # weights_{t,s,b} = query_{s,b,f} * Watt_{f,n} * outcomplete_{t,s,b,n}
+        energies = tf.einsum('sbf,fn,tsbn->tsb', query, W_att, out_complete)  # (trg_len, src_len, batch)
 
       energies_extended = tf.expand_dims(energies, axis=3)  # (trg_len, src_len, batch, 1)
       weights = tf.nn.softmax(energies_extended, axis=1)  # (trg_len, src_len, batch, 1)
       weighted = weights * out_complete  # (trg_len, src_len, batch, n_hidden)
-      weighted_sum = tf.reduce_sum(weighted, axis=1)  # (trg_len, batch, n_hidden)
+      if over_x:
+        weighted_sum = tf.reduce_sum(weighted, axis=1)  # (trg_len, batch, n_hidden)
+      else:
+        weighted_sum = tf.reduce_sum(weighted, axis=0)  # (src_len, batch, n_hidden)
 
       return weighted_sum
 
     if self.pooling == 'max':
-      output = max_pooling(outComplete)
-    elif self.pooling == 'average':
-      output = average_pooling(src_mask, outComplete)
-    elif self.pooling == 'weighted':
-      output = weighted_pooling(src_mask, outComplete, target)
-    else:
-      output = last_pooling(src_mask, outComplete)
+      # Masked out places would have 0 as their value. This causes the max operation be become a RELU op.
+      # Because this only happens for sequences with applied padding, the training would be dependant on the chosen
+      # batches. To avoid that, we set all padded values to very low values that will not be selected by the max op
+      output_mask_src = tf.expand_dims(tf.expand_dims(src_mask, axis=0), axis=3)  # (1, src_len, batch, 1)
+      output_mask_trg = tf.expand_dims(tf.expand_dims(trg_mask, axis=1), axis=3)  # (trg_len, 1, batch, 1)
+      output_mask = tf.logical_or(output_mask_src, output_mask_trg)
+      padding_mask = tf.logical_not(output_mask)
+      outComplete += tf.float32.min * tf.cast(padding_mask, dtype=tf.float32)
 
-    return output, outComplete, final_state
+      y_output = tf.reduce_max(outComplete, axis=1)
+      x_output = tf.reduce_max(outComplete, axis=0)
+    elif self.pooling == 'average':
+      y_output = average_pooling(src_mask, outComplete, True)
+      x_output = average_pooling(trg_mask, outComplete, False)
+    elif self.pooling == 'weighted':
+      y_output = weighted_pooling(src_mask, outComplete, target, trg_mask, True)
+      x_output = weighted_pooling(src_mask, outComplete, source, src_mask, False)
+    else:
+      y_output = last_pooling(src_mask, outComplete, True)
+      x_output = last_pooling(src_mask, outComplete, False)
+
+    return x_output, y_output, outComplete, final_state
 
 
 def chunk(x, index, chunk_size, chunk_step):

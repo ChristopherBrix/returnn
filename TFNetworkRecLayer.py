@@ -7604,9 +7604,14 @@ class TwoDLSTMLayer(LayerBase):
 
       # this must not be part of var_creation_scope - otherwise the used operations appear to TF to be used outside
       # of the while loop, leading to errors
-      y = self._get_output_native_rec_op(self.cell)
+      x, y = self._get_output_native_rec_op(self.cell)
 
       self.output.placeholder = y
+      self.output_dict = {
+        "output_x": x,
+        "output_y": y
+      }
+      self.n_out = kwargs["n_out"]
 
       # Very generic way to collect all created params.
       # Note that for the TF RNN cells, there is no other way to do this.
@@ -7614,8 +7619,26 @@ class TwoDLSTMLayer(LayerBase):
       params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=re.escape(scope_name_prefix))
       self._add_params(params=params, scope_name_prefix=scope_name_prefix)
 
+  def get_sub_layer(self, layer_name):
+    assert layer_name in ["output_x", "output_y"]
+    full_layer_name = self.name + "/" + layer_name
+
+    axis = 1 if layer_name == "output_y" else 0
+    output = self.get_out_data_from_opts(self.sources, self.n_out, self.name, axis=axis)
+
+    from TFNetworkLayer import InternalLayer
+    sub_layer = InternalLayer(name=full_layer_name, output=output, network=self.network, sources=[self])
+    sub_layer.output.placeholder = self.output_dict[layer_name]
+    return sub_layer
+
+  def get_sub_layer_out_data_from_opts(cls, layer_name, parent_layer_kwargs):
+    axis = 1 if layer_name == "output_y" else 0
+    sub_layer_out_data = cls.get_out_data_from_opts(axis=axis, **parent_layer_kwargs)
+    from TFNetworkLayer import InternalLayer
+    return sub_layer_out_data, parent_layer_kwargs["network"], InternalLayer
+
   @classmethod
-  def get_out_data_from_opts(cls, sources, n_out, name, **kwargs):
+  def get_out_data_from_opts(cls, sources, n_out, name, axis=None, **kwargs):
     """
     :param list[LayerBase] sources:
     :param int n_out:
@@ -7623,11 +7646,16 @@ class TwoDLSTMLayer(LayerBase):
     :rtype: Data
     """
     assert len(sources) == 2, "Exactly 2 sources (x and y axis) have to be specified."
-    batch_dim_axis = sources[1].output.batch_dim_axis
-    time_dim_axis = sources[1].output.time_dim_axis
-    shape = sources[1].output.shape[:-1] + (n_out,)
-    size_placeholder = sources[1].output.size_placeholder.copy()
-    beam = sources[0].output.beam
+    axis = axis if axis is not None else 1
+    axis_has_no_time = sources[axis].output.time_dim_axis is None
+
+    batch_dim_axis = 0 if axis_has_no_time else 1
+    time_dim_axis = None if axis_has_no_time else 0
+
+    shape = sources[axis].output.shape[:-1] + (n_out,)
+    size_placeholder = sources[axis].output.size_placeholder.copy()
+    beam_size = sources[1 if axis == "x" else 0].output.beam_size
+
     dtype = "float32"
     available_for_inference = all([src.output.available_for_inference for src in sources])
 
@@ -7661,10 +7689,33 @@ class TwoDLSTMLayer(LayerBase):
     assert len(self.sources) == 2
     assert self.sources[0].output
     assert self.sources[1].output
-    x = self.sources[0].output.get_placeholder_as_time_major()  # (time,batch,[dim])
-    seq_len_src = self.sources[0].output.get_sequence_lengths()
+    if self.search_along_axis == "x":
+      assert not self.sources[0].output.have_time_axis()
+      x = self.sources[0].output.get_placeholder_as_batch_major()  # (batch, dim)
+      x = tf.expand_dims(x, 0)  # (1, batch, dim)
+      x_mask = tf.ones((1, tf.shape(x)[1]))  # (1, batch, dim)
+      x_mask = tf.cast(x_mask, dtype=tf.bool)
+    else:
+    assert self.sources[0].output.have_time_axis()
+      x = self.sources[0].output.get_placeholder_as_time_major()  # (time, batch, dim)
+      x_mask = self.sources[0].output.get_sequence_mask()  # (time, batch) or (batch, time)
+      if not self.sources[0].output.is_time_major:
+        x_mask = tf.transpose(x_mask)  # (time, batch)
 
-    return x, seq_len_src
+    if self.search_along_axis == "y":
+      assert not self.sources[1].output.have_time_axis()
+      y = self.sources[1].output.get_placeholder_as_batch_major()  # (batch, dim)
+      y = tf.expand_dims(y, 0)  # (1, batch, dim)
+      y_mask = tf.ones((1, tf.shape(y)[1],))  # (1, batch)
+      y_mask = tf.cast(y_mask, dtype=tf.bool)
+    else:
+      assert self.sources[1].output.have_time_axis()
+      y = self.sources[1].output.get_placeholder_as_time_major()  # (time, batch, dim)
+      y_mask = self.sources[1].output.get_sequence_mask()  # (time, batch) or (batch, time)
+      if not self.sources[1].output.is_time_major:
+        y_mask = tf.transpose(y_mask)  # (time, batch)
+
+    return (x, x_mask), (y, y_mask)
 
   def get_constraints_value(self):
     """
@@ -7688,61 +7739,73 @@ class TwoDLSTMLayer(LayerBase):
     if unit_opts is None:
       unit_opts = {}
 
-    assert not self.sources[0].output.sparse
+    assert not self.sources[0].output.sparse and not self.sources[1].output.sparse
     n_input_dim_parts = [self.sources[0].output.dim, self.sources[1].output.dim]
     cell = rnn_cell_class(
       n_hidden=n_hidden, n_input_dim=sum(n_input_dim_parts), n_input_dim_parts=n_input_dim_parts,
-      input_is_sparse=self.sources[0].output.sparse,
+      input_is_sparse=False,
       pooling=self.pooling,
       rec_weight_dropout=self.rec_weight_dropout,
       **unit_opts)
     return cell
 
   @classmethod
-  def helper_extra_outputs(cls, batch_dim, src_length, features):
+  def helper_extra_outputs(cls, batch_dim, y_length, x_length, features):
     """
     :param tf.Tensor batch_dim:
     :param tf.Tensor src_length:
     :param tf.Tensor|int features:
     :rtype: dict[str,tf.Tensor]
     """
-    return {"state": tf.zeros([batch_dim, 1, src_length, 5 * features]),
-            "output": tf.zeros([batch_dim, 1, src_length, features]),
+    return {"state": tf.zeros([batch_dim, 1, y_length, x_length, 5 * features]),
+            "output": tf.zeros([batch_dim, 1, y_length, x_length, features]),
             "iteration": tf.zeros([batch_dim])}
 
   # noinspection PyMethodOverriding
   @classmethod
-  def get_rec_initial_extra_outputs(cls, batch_dim, n_out, sources, **kwargs):
+  def get_rec_initial_extra_outputs(cls, batch_dim, n_out, sources, search_along_axis, **kwargs):
     """
     :param tf.Tensor batch_dim:
     :param int n_out:
     :param list[LayerBase] sources:
     :rtype: dict[str,tf.Tensor]
     """
-    if sources[1].output.time_dim_axis is None:
+    if search_along_axis == "y":
+      assert sources[1].output.time_dim_axis is None
       assert sources[0].output.time_dim_axis is not None
-      src_length = tf.reduce_max(sources[0].output.get_sequence_lengths())
-      return cls.helper_extra_outputs(batch_dim, src_length, n_out)
-    else:
-      return {}
+      x_length = tf.reduce_max(sources[0].output.get_sequence_lengths())
+      return cls.helper_extra_outputs(batch_dim, 1, x_length, n_out)
+    elif search_along_axis == "x":
+      assert sources[0].output.time_dim_axis is None
+      assert sources[1].output.time_dim_axis is not None
+      y_length = tf.reduce_max(sources[1].output.get_sequence_lengths())
+      return cls.helper_extra_outputs(batch_dim, y_length, 1, n_out)
+    return {}
 
-  @classmethod
-  def get_rec_initial_extra_outputs_shape_invariants(cls, n_out, sources, **kwargs):
+
+@classmethod
+  def get_rec_initial_extra_outputs_shape_invariants(cls, n_out, sources, search_along_axis, **kwargs):
     """
     :return: optional shapes for the tensors by get_rec_initial_extra_outputs
     :rtype: dict[str,tf.TensorShape]
     """
-    if sources[1].output.time_dim_axis is None:
+    if search_along_axis == "y":
       batch_dim = None
-      src_length = None
+      x_length = None
 
-      return {"state": tf.TensorShape((batch_dim, 1, src_length, 5 * n_out)),
-              "output": tf.TensorShape((batch_dim, 1, src_length, n_out)),
+      return {"state": tf.TensorShape((batch_dim, 1, x_length, 5 * n_out)),
+              "output": tf.TensorShape((batch_dim, 1, x_length, n_out)),
               "iteration": tf.TensorShape((batch_dim,))}
-    else:
-      return {}
+    elif search_along_axis == "x":
+      assert sources[0].output.time_dim_axis is None
+      batch_dim = None
+      y_length = None
+      return {"state": tf.TensorShape((batch_dim, y_length, 1, 5 * n_out)),
+              "output": tf.TensorShape((batch_dim, y_length, 1, n_out)),
+              "iteration": tf.TensorShape((batch_dim,))}
+    return {}
 
-  def _get_output_native_rec_op(self, cell):
+def _get_output_native_rec_op(self, cell):
     """
     :param TFNativeOp.RecSeqCellOp cell:
     :return: output of shape (time, batch, dim)
@@ -7751,80 +7814,67 @@ class TwoDLSTMLayer(LayerBase):
     from TFUtil import dot, sequence_mask_time_major, to_int32_64, set_param_axes_split_info
 
     assert self.sources[0].output
-    x, seq_len_src = self._get_input()
-    if cell.does_input_projection:
-      # The cell get's x as-is. It will internally does the matrix mult and add the bias.
-      pass
-    else:
-      weights = tf.get_variable(
-        name="W", shape=(self.sources[0].output.dim, cell.n_input_dim), dtype=tf.float32,
-        initializer=self._fwd_weights_initializer)
-      if self.sources[0].output.sparse:
-        x = tf.nn.embedding_lookup(weights, to_int32_64(x))
-      else:
-        x = dot(x, weights)
-      b = tf.get_variable(name="b", shape=(cell.n_input_dim,), dtype=tf.float32, initializer=self._bias_initializer)
-      if len(cell.n_input_dim_parts) > 1:
-        set_param_axes_split_info(weights, [[self.sources[0].output.dim], cell.n_input_dim_parts])
-        set_param_axes_split_info(b, [cell.n_input_dim_parts])
-      x += b
-    index_src = sequence_mask_time_major(seq_len_src, maxlen=self.sources[0].output.time_dimension())
+    (x, x_mask), (y, y_mask) = self._get_input()
+    assert cell.does_input_projection
 
-    # If the target does not have a time dimension, we have to add it
-    if self.sources[1].output.time_dim_axis is None:
-      targets = self.sources[1].output.get_placeholder_as_batch_major()  # (batch, trg_features)
-      targets = tf.expand_dims(targets, 0)  # (1, batch, trg_features)
-    else:
-      targets = self.sources[1].output.get_placeholder_as_time_major()  # (trg_length, batch, trg_features)
-
-    if self._rec_previous_layer:
-      previous_state = self._rec_previous_layer.rec_vars_outputs["state"]  # (batch, 1, src_length, n_hidden)
-      previous_output = self._rec_previous_layer.rec_vars_outputs["output"]  # (batch, 1, src_length, n_hidden)
+    if self.network.have_rec_step_info():
+      previous_state = self._rec_previous_layer.rec_vars_outputs["state"]  # (batch, y_length, x_length n_hidden)
+      previous_output = self._rec_previous_layer.rec_vars_outputs["output"]  # (batch, y_length, x_length, n_hidden)
       iteration = self._rec_previous_layer.rec_vars_outputs["iteration"]  # (batch,)
     else:
-      batch_dim = tf.shape(targets)[1]
-      sources = self.sources[0].output.get_placeholder_as_time_major()
+      batch_dim = tf.shape(y)[1]
+      sources = x
       src_length = tf.shape(sources)[0]
-      features = tf.shape(sources)[2]
-      initial_values = TwoDLSTMLayer.helper_extra_outputs(batch_dim, src_length, features)
+      n_hidden = cell.n_hidden
+      initial_values = TwoDLSTMLayer.helper_extra_outputs(batch_dim, 1, src_length, n_hidden)
 
-      previous_state = initial_values["state"]    # (batch, 1, src_length, n_hidden)
-      previous_output = initial_values["output"]  # (batch, 1, src_length, n_hidden)
+      previous_state = initial_values["state"]    # (batch, y_length, x_length, n_hidden)
+      previous_output = initial_values["output"]  # (batch, y_length, x_length, n_hidden)
       iteration = initial_values["iteration"]     # (batch,)
 
     # to support the selection of the correct previous states and outputs, they have to be stored in batch mayor format
     # the c code needs them to be in time mayor (trg, src) format, so we have to swap the axes
-    previous_state = tf.transpose(previous_state, perm=[1, 2, 0, 3])    # (1, src_length, batch, n_hidden)
-    previous_output = tf.transpose(previous_output, perm=[1, 2, 0, 3])  # (1, src_length, batch, n_hidden)
+    previous_state = tf.transpose(previous_state, perm=[1, 2, 0, 3])    # (y_length, x_length, batch, n_hidden)
+    previous_output = tf.transpose(previous_output, perm=[1, 2, 0, 3])  # (y_length, x_length, batch, n_hidden)
 
     # noinspection PyTupleAssignmentBalance,PyArgumentList
-    y, complete_output, final_state = cell(
+    x_out, y_out, complete_output, final_state = cell(
       source=x, src_mask=index_src,
       recurrent_weights_initializer=self._rec_weights_initializer,
-      target=targets,
+      target=y,
       previous_state=previous_state,
       previous_output=previous_output,
+      initialAxisIsX=(self.search_along_axis is None or self.search_along_axis == "y"),
       iteration=iteration)
     # y (trg_length, batch, n_hidden)
     # complete_out (trg_length, src_length, batch, n_hidden)
     # final_state (trg_length, src_length, batch, n_hidden*5)
 
     # swap axes again, to get back to the batch mayor format that's required by RETURNN
-    final_state = tf.transpose(final_state, perm=[2, 0, 1, 3])          # (batch, trg_length, src_length, features)
-    complete_output = tf.transpose(complete_output, perm=[2, 0, 1, 3])  # (batch, trg_length, src_length, features)
+    final_state = tf.transpose(final_state, perm=[2, 0, 1, 3])          # (batch, y_length, x_length, features)
+    complete_output = tf.transpose(complete_output, perm=[2, 0, 1, 3])  # (batch, y_length, x_length, features)
 
-    final_state = final_state[:, -1:, :, :]          # (batch, 1, src_length, features)
-    complete_output = complete_output[:, -1:, :, :]  # (batch, 1, src_length, features)
+    if self.network.have_rec_step_info():
+      assert self.search_along_axis in ["x", "y"]
+      if self.search_along_axis == "y":
+        final_state = final_state[:, -1:, :, :]  # (batch, 1, x_length, features)
+        complete_output = complete_output[:, -1:, :, :]  # (batch, 1, x_length, features)
+      else:
+        final_state = final_state[:, :, -1:, :]  # (batch, y_length, 1, features)
+        complete_output = complete_output[:, :, -1:, :]  # (batch, y_length, 1, features)
 
-    self.rec_vars_outputs["state"] = final_state
-    self.rec_vars_outputs["output"] = complete_output
-    self.rec_vars_outputs["iteration"] = iteration + 1
+      self.rec_vars_outputs["state"] = final_state
+      self.rec_vars_outputs["output"] = complete_output
+      self.rec_vars_outputs["iteration"] = iteration + 1
 
     # during inference, the 2D result has target length 1. This dimension has to be removed to be conform with RETURNN
     if self.network.have_rec_step_info():
-      y = y[0]
+      if self.search_along_axis == "y":
+        y_out = y_out[0]
+      elif self.search_along_axis == "x":
+        x_out = x_out[0]
 
-    return y
+    return x_out, y_out
 
 
 class ZoneoutLSTMCell(BaseRNNCell):

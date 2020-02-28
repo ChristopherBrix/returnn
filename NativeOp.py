@@ -1807,6 +1807,7 @@ class TwoDLSTM(NativeOpGenBase):
      "gradient": "disconnected"},
     {"name": "initialOutput", "ndim": 4, "shape": (None, None, None, None), "need_contiguous": True,
      "gradient": "disconnected"},
+    {"name": "initialAxisIsX", "ndim": 1, "shape": (None,), "need_contiguous": True, "gradient": "disconnected"},
     {"name": "iteration", "ndim": 1, "shape": (None,), "need_contiguous": True, "gradient": "disconnected"},
   )
   out_info = (
@@ -1819,9 +1820,9 @@ class TwoDLSTM(NativeOpGenBase):
 
   @classmethod
   def grad_input_map(cls, X, V_h, V_v, W, b, ptr_storage_fwd, ptr_storage_bwd, valid, workmem, workmem2, sizes, DYDummy,
-                     initialState, initialOutput, iteration, CompleteY, H, DCompleteY, DH):  # ?
+                     initialState, initialOutput,  initialAxisIsX, iteration, CompleteY, H, DCompleteY, DH):
     return (X, V_h, V_v, W, b, ptr_storage_fwd, ptr_storage_bwd, valid, workmem, workmem2, sizes, DYDummy, initialState,
-            initialOutput, iteration, CompleteY, H, DCompleteY, DH)
+            initialOutput, initialAxisIsX, iteration, CompleteY, H, DCompleteY, DH)
 
   @classmethod
   def map_layer_inputs_to_op(cls, Zs, Zt, V_h, V_v, W, b, ptr_storage):
@@ -2004,8 +2005,8 @@ class TwoDLSTM(NativeOpGenBase):
     """,
     "06_do_lstm_batched_onedir": """
       // H, CompleteY, ys, xs, ptr_storage
-      void do_lstm_batched_onedir(OpKernelContext* context, Ndarray* H, Ndarray* initialState, float iteration, Ndarray* completeOut,
-       const std::vector<int>& ys, const std::vector<int>& xs,
+      void do_lstm_batched_onedir(OpKernelContext* context, Ndarray* H, Ndarray* initialState, float h_initialAxisIsX,
+       float iteration, Ndarray* completeOut, const std::vector<int>& ys, const std::vector<int>& xs,
        Ndarray* ptr_storage, Ndarray* valid_storage, Ndarray* sizes)
       {
         int n_outer_batch = ys.size();
@@ -2043,10 +2044,22 @@ class TwoDLSTM(NativeOpGenBase):
 
           //y not flipped, x not flipped
           float * data_old_state_y;
-          data_old_state_y = y > 0 ? data_ptr(H, y - 1, x) + 4 * n_cells : data_ptr(initialState, 0, x) + 4 * n_cells;
+          if(h_initialAxisIsX) {
+            data_old_state_y = y > 0 ? data_ptr(H, y - 1, x) + 4 * n_cells : data_ptr(initialState, 0, x) + 4 * n_cells;
+          }
+          else {
+            data_old_state_y = y > 0 ? data_ptr(H, y - 1, x) + 4 * n_cells : 0;
+          }
 
           //y not flipped, x not flipped
-          float * data_old_state_x = x > 0 ? data_ptr(H, y, x - 1) + 4 * n_cells : 0;
+          float * data_old_state_x;
+          if(!h_initialAxisIsX) {
+            data_old_state_x = x > 0 ? data_ptr(H, y, x - 1) + 4 * n_cells : data_ptr(initialState, y, 0) + 4 * n_cells;
+          }
+          else {
+            data_old_state_x = x > 0 ? data_ptr(H, y, x - 1) + 4 * n_cells : 0;
+          }
+
 
           //y not flipped, x not flipped
           float * data_out = data_ptr(completeOut, y, x);
@@ -2296,10 +2309,11 @@ class TwoDLSTM(NativeOpGenBase):
   }
 
   c_fw_code = """
-    // X*, V_h, V_v, W, b, ptr_storage_fwd, ptr_storage_bwd, valid, workmem, sizes, DYDummy, initialState, initialOutput, iteration = input_names (*: inplace)
+    // X*, V_h, V_v, W, b, ptr_storage_fwd, ptr_storage_bwd, valid, workmem, sizes, DYDummy, initialState,
+    // initialOutput, initialAxisIsX, iteration = input_names (*: inplace)
     // CompleteY, H = output_names
 
-    assert(n_inputs == 15);
+    assert(n_inputs == 16);
     assert(n_outputs == 2);
 
     Ndarray* X = inputs[0];
@@ -2316,7 +2330,8 @@ class TwoDLSTM(NativeOpGenBase):
     Ndarray* DYDummy = inputs[11]; // not used in fwd
     Ndarray* initialState = inputs[12];
     Ndarray* initialOutput = inputs[13];
-    Ndarray* iteration = inputs[14];
+    Ndarray* initialAxisIsX = inputs[14];
+    Ndarray* iteration = inputs[15];
 
     assert(sizeof(float) == 4 && "ptr_storage has wrong size if sizeof(float) != 4");
     assert(sizeof(float*) == 8 && "ptr_storage has wrong size if sizeof(float*) != 8");
@@ -2350,6 +2365,9 @@ class TwoDLSTM(NativeOpGenBase):
     float h_iteration;
     HANDLE_ERROR(cudaMemcpy(&h_iteration, Ndarray_DEV_DATA(iteration), 1*sizeof(float), cudaMemcpyDeviceToHost));
 
+    float h_initialAxisIsX;
+    HANDLE_ERROR(cudaMemcpy(&h_initialAxisIsX, Ndarray_DEV_DATA(initialAxisIsX), 1*sizeof(float), cudaMemcpyDeviceToHost));
+
     for(long long diag = 0; diag < n_diags; ++diag)
     {
       int diag_size = min(diag+1, min((long long) abs(n_diags-diag), min(width, height)));
@@ -2360,12 +2378,12 @@ class TwoDLSTM(NativeOpGenBase):
       {
         int y = y_high - idx;
         int x = x_low + idx;
-        if(x > 0)
+        if(x > 0 || (h_iteration >= 1 && !h_initialAxisIsX))
         {
           ys_h.push_back(y);
           xs_h.push_back(x);
         }
-        if(y > 0 || h_iteration >= 1) {
+        if(y > 0 || (h_iteration >= 1 && h_initialAxisIsX)) {
           ys_v.push_back(y);
           xs_v.push_back(x);
         }
@@ -2373,11 +2391,17 @@ class TwoDLSTM(NativeOpGenBase):
         xs.push_back(x);
       }
 
-      affine_y_x_batched_onedir(context, 0, -1,
-        CompleteY, V_h, H, ys_h, xs_h, ptr_storage_fwd, height, width);
-
       // If it's not the first iteration, we need to use the explicitly provided initial output
-      if(h_iteration >= 1) {
+      if(h_iteration >= 1 && !h_initialAxisIsX) {
+        assert(ys_h.size() == 1); // Otherwise, the target length would be != 1, we don't support that yet.
+        affine_y_x_batched_onedir(context, 0, 0,
+          initialOutput, V_h, H, ys_h, xs_h, ptr_storage_fwd, height, width);
+      }
+      else {
+        affine_y_x_batched_onedir(context, 0, -1,
+          CompleteY, V_h, H, ys_h, xs_h, ptr_storage_fwd, height, width);
+      }
+      if(h_iteration >= 1 && h_initialAxisIsX) {
         assert(ys_v.size() == 1); // Otherwise, the target length would be != 1, we don't support that yet.
         affine_y_x_batched_onedir(context, 0, 0,
           initialOutput, V_v, H, ys_v, xs_v, ptr_storage_fwd, height, width);
@@ -2387,16 +2411,16 @@ class TwoDLSTM(NativeOpGenBase):
           CompleteY, V_v, H, ys_v, xs_v, ptr_storage_fwd, height, width);
       }
 
-      do_lstm_batched_onedir(context, H, initialState, h_iteration, CompleteY, ys, xs, ptr_storage_fwd, valid, sizes);
+      do_lstm_batched_onedir(context, H, initialState, h_initialAxisIsX, h_iteration, CompleteY, ys, xs, ptr_storage_fwd, valid, sizes);
     }
     """
 
   c_bw_code = """
     // X, V_h, V_v, W, b, ptr_storage_fwd, ptr_storage_bwd, valid, workmem, workmem2, sizes, DYDummy, initialState,
-    //   initialOutput, iteration, CompleteY, H, DCompleteY, DH = inputs
+    //   initialOutput, initialAxisIsX, iteration, CompleteY, H, DCompleteY, DH = inputs
     // DX, DV_h, DV_v, DW, Db = outputs
 
-    assert(n_inputs == 19);
+    assert(n_inputs == 20);
     assert(n_outputs == 5);
 
     Ndarray* X = inputs[0];
@@ -2413,11 +2437,12 @@ class TwoDLSTM(NativeOpGenBase):
     Ndarray* DYDummy = inputs[11];
     Ndarray* initialState = inputs[12];
     Ndarray* initialOutput = inputs[13];
-    Ndarray* iteration = inputs[14]; // not used in bwd (only for asserting it's == 0)
-    Ndarray* CompleteY = inputs[15];
-    Ndarray* H = inputs[16];
-    Ndarray* DCompleteY = inputs[17];
-    Ndarray* DH = inputs[18];
+    Ndarray* initialAxisIsX = inputs[14];
+    Ndarray* iteration = inputs[15]; // not used in bwd (only for asserting it's == 0)
+    Ndarray* CompleteY = inputs[16];
+    Ndarray* H = inputs[17];
+    Ndarray* DCompleteY = inputs[18];
+    Ndarray* DH = inputs[19];
 
     Ndarray* DX = *outputs[0];
     Ndarray* DV_h = *outputs[1];
