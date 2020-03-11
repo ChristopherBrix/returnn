@@ -965,6 +965,7 @@ class TwoDNativeLstmCell(RecSeqCellOp):
 
     DYDummy = tf.zeros((trg_length, src_length, n_batch, n_out), dtype=tf.float32)
 
+    n_minibatch = tf.shape(X)[2]
     if initialAxisIsX:
       initialAxisIsX = tf.ones((n_minibatch,), dtype=tf.float32)
     else:
@@ -1008,7 +1009,7 @@ class TwoDNativeLstmCell(RecSeqCellOp):
     ], axis=3) # (trg_len, src_len, batch, features)
 
     outComplete, final_state = self.op(
-      *self.map_layer_inputs_to_op(X=twod_input, V_h=Vh_re, V_v=Vv_re, W=W_re, i=src_mask, i_trg=trg_mask,
+      *self.map_layer_inputs_to_op(X=twod_input, V_h=Vh_re, V_v=Vv_re, W=W_re, i=tf.cast(src_mask, dtype=tf.float32), i_trg=tf.cast(trg_mask, dtype=tf.float32),
                                    previous_state=previous_state, previous_output=previous_output,
                                    initialAxisIsX=initialAxisIsX, iteration=iteration))
 

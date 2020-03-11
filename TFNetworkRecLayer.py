@@ -7536,7 +7536,7 @@ class TwoDLSTMLayer(LayerBase):
   recurrent = True
 
   def __init__(self, pooling='last', rec_weight_dropout=0.0, unit_opts=None, forward_weights_init=None,
-               recurrent_weights_init=None, bias_init=None, **kwargs):
+               recurrent_weights_init=None, bias_init=None, search_along_axis=None, **kwargs):
     """
     :param str pooling: defines how the 1D return value is computed based on the 2D lstm result. Either 'last' or 'max'
     :param float rec_weight_dropout: dropout for weight matrices
@@ -7553,6 +7553,7 @@ class TwoDLSTMLayer(LayerBase):
     else:
       assert False, "currently, there's no CPU support"
     self.pooling = pooling
+    self.search_along_axis = search_along_axis
     self.rec_weight_dropout = rec_weight_dropout
     # On the random initialization:
     # For many cells, e.g. NativeLSTM: there will be a single recurrent weight matrix, (output.dim, output.dim * 4),
@@ -7654,7 +7655,7 @@ class TwoDLSTMLayer(LayerBase):
 
     shape = sources[axis].output.shape[:-1] + (n_out,)
     size_placeholder = sources[axis].output.size_placeholder.copy()
-    beam_size = sources[1 if axis == "x" else 0].output.beam_size
+    beam = sources[1 if axis == "x" else 0].output.beam
 
     dtype = "float32"
     available_for_inference = all([src.output.available_for_inference for src in sources])
@@ -7696,7 +7697,7 @@ class TwoDLSTMLayer(LayerBase):
       x_mask = tf.ones((1, tf.shape(x)[1]))  # (1, batch, dim)
       x_mask = tf.cast(x_mask, dtype=tf.bool)
     else:
-    assert self.sources[0].output.have_time_axis()
+      assert self.sources[0].output.have_time_axis()
       x = self.sources[0].output.get_placeholder_as_time_major()  # (time, batch, dim)
       x_mask = self.sources[0].output.get_sequence_mask()  # (time, batch) or (batch, time)
       if not self.sources[0].output.is_time_major:
@@ -7757,8 +7758,8 @@ class TwoDLSTMLayer(LayerBase):
     :param tf.Tensor|int features:
     :rtype: dict[str,tf.Tensor]
     """
-    return {"state": tf.zeros([batch_dim, 1, y_length, x_length, 5 * features]),
-            "output": tf.zeros([batch_dim, 1, y_length, x_length, features]),
+    return {"state": tf.zeros([batch_dim, y_length, x_length, 5 * features]),
+            "output": tf.zeros([batch_dim, y_length, x_length, features]),
             "iteration": tf.zeros([batch_dim])}
 
   # noinspection PyMethodOverriding
@@ -7783,7 +7784,7 @@ class TwoDLSTMLayer(LayerBase):
     return {}
 
 
-@classmethod
+  @classmethod
   def get_rec_initial_extra_outputs_shape_invariants(cls, n_out, sources, search_along_axis, **kwargs):
     """
     :return: optional shapes for the tensors by get_rec_initial_extra_outputs
@@ -7805,7 +7806,7 @@ class TwoDLSTMLayer(LayerBase):
               "iteration": tf.TensorShape((batch_dim,))}
     return {}
 
-def _get_output_native_rec_op(self, cell):
+  def _get_output_native_rec_op(self, cell):
     """
     :param TFNativeOp.RecSeqCellOp cell:
     :return: output of shape (time, batch, dim)
@@ -7839,7 +7840,7 @@ def _get_output_native_rec_op(self, cell):
 
     # noinspection PyTupleAssignmentBalance,PyArgumentList
     x_out, y_out, complete_output, final_state = cell(
-      source=x, src_mask=index_src,
+      source=x, src_mask=x_mask, trg_mask=y_mask,
       recurrent_weights_initializer=self._rec_weights_initializer,
       target=y,
       previous_state=previous_state,
