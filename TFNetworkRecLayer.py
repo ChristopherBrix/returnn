@@ -7632,6 +7632,7 @@ class TwoDLSTMLayer(LayerBase):
     sub_layer.output.placeholder = self.output_dict[layer_name]
     return sub_layer
 
+  @classmethod
   def get_sub_layer_out_data_from_opts(cls, layer_name, parent_layer_kwargs):
     axis = 1 if layer_name == "output_y" else 0
     sub_layer_out_data = cls.get_out_data_from_opts(axis=axis, **parent_layer_kwargs)
