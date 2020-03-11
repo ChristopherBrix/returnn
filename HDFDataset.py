@@ -881,7 +881,7 @@ class SimpleHDFWriter:
   Note that we dump to a temp file first, and only at :func:`close` we move it over to the real destination.
   """
 
-  def __init__(self, filename, dim, labels=None, ndim=None, extra_type=None, swmr=False):
+  def __init__(self, filename, dim, labels=None, ndim=None, extra_type=None, swmr=False, allow_overwrite=False):
     """
     :param str filename: Create file, truncate if exists
     :param int|None dim:
@@ -906,7 +906,7 @@ class SimpleHDFWriter:
     self.filename = filename
     # By default, we should not override existing data.
     # If we want that at some later point, we can introduce an option for it.
-    assert not os.path.exists(self.filename)
+    assert allow_overwrite or not os.path.exists(self.filename)
     tmp_fd, self.tmp_filename = tempfile.mkstemp(suffix=".hdf")
     os.close(tmp_fd)
     self._file = h5py.File(self.tmp_filename, "w", libver='latest' if swmr else None)

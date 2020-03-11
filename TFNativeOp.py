@@ -1126,11 +1126,11 @@ class TwoDNativeLstmCell(RecSeqCellOp):
       y_output = average_pooling(src_mask, outComplete, True)
       x_output = average_pooling(trg_mask, outComplete, False)
     elif self.pooling == 'weighted':
-      y_output = weighted_pooling(src_mask, outComplete, target, trg_mask, True)
-      x_output = weighted_pooling(src_mask, outComplete, source, src_mask, False)
+      y_output = weighted_pooling(outComplete, target, trg_mask, True)
+      x_output = weighted_pooling(outComplete, source, src_mask, False)
     else:
       y_output = last_pooling(src_mask, outComplete, True)
-      x_output = last_pooling(src_mask, outComplete, False)
+      x_output = last_pooling(trg_mask, outComplete, False)
 
     return x_output, y_output, outComplete, final_state
 
